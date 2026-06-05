@@ -16,7 +16,6 @@ import random
 import collections
 import os
 import re
-import chardet
 import copy
 
 try:
@@ -25,25 +24,16 @@ try:
 except ImportError:
     XL_OK = False
 
-try:
-    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-    VADER_OK = True
-except ImportError:
-    VADER_OK = False
-
-try:
-    from dostoevsky.tokenization import RegexTokenizer
-    from dostoevsky.models import FastTextSocialNetworkModel
-    DOST_OK = True
-except ImportError:
-    DOST_OK = False
-
+# Загрузка ресурсов NLTK
 for res in ['tokenizers/punkt', 'corpora/stopwords']:
     try:
         nltk.data.find(res)
     except LookupError:
         nltk.download(res.split('/')[-1])
 
+# -------------------------------------------------------------
+# ГЛАВНОЕ ПРИЛОЖЕНИЕ
+# -------------------------------------------------------------
 class App:
     def __init__(self, master):
         self.master = master
@@ -60,6 +50,12 @@ class App:
         self.btn_txt = ttk.Button(top, text="📄 Текстовые данные", command=self._show_txt)
         self.btn_txt.pack(side=tk.LEFT, padx=10)
 
+        self.btn_undo = ttk.Button(top, text="↶", command=self._undo)
+        self.btn_undo.pack(side=tk.LEFT, padx=2)
+
+        self.btn_redo = ttk.Button(top, text="↷", command=self._redo)
+        self.btn_redo.pack(side=tk.LEFT, padx=2)
+
         self.btn_help = ttk.Button(top, text="❓ Справка", command=self._help)
         self.btn_help.pack(side=tk.RIGHT, padx=10)
 
@@ -73,6 +69,14 @@ class App:
         self.txt_tab = TxtTab(self.txt_frame, self)
 
         self._show_num()
+        master.bind('<Control-Key>', self._global_hotkey)
+
+    def _global_hotkey(self, event):
+        ks = event.keysym.lower()
+        if ks in ('z', 'я'):
+            self._undo()
+        elif ks in ('y', 'н'):
+            self._redo()
 
     def _show_num(self):
         self.txt_frame.pack_forget()
@@ -86,33 +90,45 @@ class App:
         self.btn_txt.config(state='disabled')
         self.btn_num.config(state='normal')
 
+    def _undo(self):
+        if self.num_frame.winfo_ismapped():
+            self.num_tab.undo()
+        else:
+            self.txt_tab.undo()
+
+    def _redo(self):
+        if self.num_frame.winfo_ismapped():
+            self.num_tab.redo()
+        else:
+            self.txt_tab.redo()
+
     def _help(self):
         text = """🔹 КАК РАБОТАТЬ С ПРОГРАММОЙ 🔹
 
 1. ЧИСЛОВЫЕ ДАННЫЕ:
-   • Введите число и нажмите Enter – добавится в список.
-   • Двойной клик по числу – редактирование.
+   • Выберите режим ввода: "1 столбец" или "2 столбца" (кнопка переключения).
+   • Для одномерных данных: введите число в поле и нажмите Enter.
+   • Для двумерных данных (X,Y): введите X и Y в соответствующие поля и нажмите Enter.
+   • Двойной клик по числу/паре – редактирование.
    • Кнопки: очистить, гистограмма, график, сортировка, фильтр, сброс фильтра.
-   • Поиск, генерация случайных чисел, статистика.
-   • Загрузка двумерных (X,Y) – «Открыть (2 столбца)».
-   • Сохранение в TXT/CSV/Excel, открытие файлов (TXT, CSV, Excel, DOCX).
+   • Поиск, загрузка из файлов (TXT, CSV, Excel, Word), сохранение.
+   • Загрузка двумерных данных также через "📂 Открыть (2 столбца)".
    • Математические методы – меню «📐 Мат. методы»:
-        регрессия, корреляция, интерполяция, t-тест, выбросы,
-        нормализация, стандартизация, доверительный интервал.
-   • Отмена/повтор: Ctrl+Z, Ctrl+Y или кнопки ↶/↷.
+        - Для двумерных (X,Y): корреляция Пирсона, линейная регрессия, полином 4-й степени,
+          интерполяция (Лагранж, Ньютон, канонический, сплайны).
+        - Для одномерных: t-тест, удаление выбросов, нормализация, стандартизация,
+          доверительный интервал.
+   • Отмена/повтор: Ctrl+Z, Ctrl+Y или кнопки ↶/↷ в главном окне.
 
 2. ТЕКСТОВЫЕ ДАННЫЕ:
    • Загрузить TXT, CSV, PDF, DOCX или ввести вручную.
-   • Выбрать язык (русский, английский, немецкий, французский, испанский).
-   • Кнопки: статистика, поиск, облако слов, тональность, удалить стоп-слова, стемминг.
-   • Отмена/повтор: Ctrl+Z, Ctrl+Y (встроены в текстовое поле).
-
-3. ОБЩЕЕ:
-   • Переключение между режимами сохраняет данные.
-   • Математические методы описаны в меню.
+   • Поддерживаются русский и английский языки.
+   • Кнопки: загрузить, сохранить, очистить, поиск, облако слов, удалить стоп-слова, стемминг.
+   • Тональность анализируется автоматически (справа).
+   • Отмена/повтор: Ctrl+Z, Ctrl+Y.
 
 Горячие клавиши:
-   Enter – добавить число (числовой режим)
+   Enter – добавить (числовой режим)
    Ctrl+Z – отменить
    Ctrl+Y – повторить
 """
@@ -126,6 +142,9 @@ class App:
         self.master.destroy()
 
 
+# -------------------------------------------------------------
+# ВКЛАДКА ЧИСЛОВЫХ ДАННЫХ (без кнопки "Добавить")
+# -------------------------------------------------------------
 class NumTab:
     def __init__(self, parent, app):
         self.parent = parent
@@ -136,11 +155,10 @@ class NumTab:
         self.bivar = False
         self.x = []
         self.y = []
-
+        self.two_column_mode = False
         self.hist = []
         self.hist_pos = -1
         self._save_hist()
-
         self._build()
         self.refresh_info()
 
@@ -158,9 +176,9 @@ class NumTab:
             self.data = copy.deepcopy(self.hist[self.hist_pos])
             if self.f_active:
                 self.unfilter()
+            self._update_xy_from_data()
             self.show()
             self.refresh_info()
-            self.msg_lbl.config(text="Отменено", foreground="blue")
 
     def redo(self):
         if self.hist_pos < len(self.hist)-1:
@@ -168,9 +186,17 @@ class NumTab:
             self.data = copy.deepcopy(self.hist[self.hist_pos])
             if self.f_active:
                 self.unfilter()
+            self._update_xy_from_data()
             self.show()
             self.refresh_info()
-            self.msg_lbl.config(text="Повторено", foreground="blue")
+
+    def _update_xy_from_data(self):
+        if self.bivar and self.data and isinstance(self.data[0], tuple):
+            self.x = [p[0] for p in self.data]
+            self.y = [p[1] for p in self.data]
+        else:
+            self.x = []
+            self.y = []
 
     def _build(self):
         btn_cont = ttk.Frame(self.parent)
@@ -199,8 +225,6 @@ class NumTab:
         row2.pack(fill='x', pady=2)
         for (text, cmd) in [
             ("🔎 Поиск", self.search),
-            ("🎲 Генерировать", self.gen_rand),
-            ("📋 Статистика", self.stats),
             ("📂 Открыть (2 столбца)", self.load_xy),
             ("💾 Сохранить", self.save),
             ("📁 Открыть файлы", self.load_many),
@@ -246,9 +270,6 @@ class NumTab:
         ]:
             btn(row3, text, cmd)
 
-        btn(row3, "↶", self.undo)
-        btn(row3, "↷", self.redo)
-
         main = ttk.Frame(self.parent)
         main.pack(fill='both', expand=True, padx=10, pady=10)
 
@@ -259,11 +280,25 @@ class NumTab:
         right.pack(side=tk.RIGHT, fill='y', padx=(10,0))
         right.pack_propagate(False)
 
-        inp = ttk.Frame(left)
-        inp.pack(fill='x', padx=5, pady=5)
-        self.entry = ttk.Entry(inp, width=30)
-        self.entry.pack(side=tk.LEFT, padx=5)
-        self.entry.bind("<Return>", lambda e: self.add())
+        inp_frame = ttk.Frame(left)
+        inp_frame.pack(fill='x', padx=5, pady=5)
+
+        self.mode_btn = ttk.Button(inp_frame, text="2 столбца", command=self._toggle_mode)
+        self.mode_btn.pack(side=tk.LEFT, padx=5)
+
+        self.entry_single = ttk.Entry(inp_frame, width=20)
+        self.entry_x = ttk.Entry(inp_frame, width=10)
+        self.entry_y = ttk.Entry(inp_frame, width=10)
+
+        self.entry_single.pack(side=tk.LEFT, padx=5)
+        self.entry_single.bind("<Return>", lambda e: self._add_from_entry())
+
+        self.entry_x.pack_forget()
+        self.entry_y.pack_forget()
+        self.entry_x.insert(0, "X")
+        self.entry_y.insert(0, "Y")
+        self.entry_x.bind("<Return>", lambda e: self._add_from_entry())
+        self.entry_y.bind("<Return>", lambda e: self._add_from_entry())
 
         self.msg_lbl = ttk.Label(left, text="", foreground="green")
         self.msg_lbl.pack(pady=5)
@@ -288,30 +323,80 @@ class NumTab:
         self.recent_lbl = ttk.Label(self.recent_box, text="—", justify=tk.LEFT)
         self.recent_lbl.pack(padx=10, pady=10)
 
-        self.parent.bind("<Return>", lambda e: self.add())
-        self.parent.bind("<Control-z>", lambda e: self.undo())
-        self.parent.bind("<Control-y>", lambda e: self.redo())
-
-    def _math_menu(self):
-        try:
-            self.menu.post(self.btn_math.winfo_rootx(),
-                           self.btn_math.winfo_rooty() + self.btn_math.winfo_height())
-        except:
-            pass
-
-    def refresh_info(self):
-        arr = self.fdata if self.f_active else self.data
-        n = len(arr)
-        self.info_lbl.config(text=f"Элементов: {n}")
-        if n > 0:
-            rec = arr[-5:] if n >= 5 else arr
-            if self.bivar:
-                txt = ", ".join([f"({x:.2f}→{y:.2f})" for (x, y) in rec])
-            else:
-                txt = ", ".join(str(v) for v in rec)
-            self.recent_lbl.config(text=txt)
+    def _toggle_mode(self):
+        self.two_column_mode = not self.two_column_mode
+        if self.two_column_mode:
+            self.mode_btn.config(text="1 столбец")
+            self.entry_single.pack_forget()
+            self.entry_x.pack(side=tk.LEFT, padx=5)
+            self.entry_y.pack(side=tk.LEFT, padx=5)
+            self.entry_x.delete(0, tk.END)
+            self.entry_y.delete(0, tk.END)
+            self.entry_x.insert(0, "X")
+            self.entry_y.insert(0, "Y")
+            self.entry_x.focus()
         else:
-            self.recent_lbl.config(text="—")
+            self.mode_btn.config(text="2 столбца")
+            self.entry_x.pack_forget()
+            self.entry_y.pack_forget()
+            self.entry_single.pack(side=tk.LEFT, padx=5)
+            self.entry_single.delete(0, tk.END)
+            self.entry_single.focus()
+
+    def _add_from_entry(self):
+        if self.two_column_mode:
+            self._add_pair()
+        else:
+            self._add_single()
+
+    def _add_single(self):
+        s = self.entry_single.get().strip()
+        if not s:
+            return
+        try:
+            val = self._float(s)
+            if self.bivar:
+                self.clear()
+            self.data.append(val)
+            self.bivar = False
+            self.x = []
+            self.y = []
+            self._save_hist()
+            if self.f_active:
+                self.unfilter()
+            self.entry_single.delete(0, tk.END)
+            self.show()
+            self.refresh_info()
+            self.msg_lbl.config(text="Добавлено", foreground="green")
+        except ValueError:
+            self.msg_lbl.config(text="Ошибка! Введите число", foreground="red")
+
+    def _add_pair(self):
+        sx = self.entry_x.get().strip()
+        sy = self.entry_y.get().strip()
+        if not sx or not sy:
+            return
+        try:
+            x = self._float(sx)
+            y = self._float(sy)
+            if not self.bivar and self.data:
+                self.clear()
+            self.data.append((x, y))
+            self.bivar = True
+            self.x.append(x)
+            self.y.append(y)
+            self._save_hist()
+            if self.f_active:
+                self.unfilter()
+            self.entry_x.delete(0, tk.END)
+            self.entry_y.delete(0, tk.END)
+            self.entry_x.insert(0, "X")
+            self.entry_y.insert(0, "Y")
+            self.show()
+            self.refresh_info()
+            self.msg_lbl.config(text="Добавлена пара", foreground="green")
+        except ValueError:
+            self.msg_lbl.config(text="Ошибка! Введите числа X и Y", foreground="red")
 
     def _float(self, s):
         s = s.strip().replace(',', '.')
@@ -319,26 +404,6 @@ class NumTab:
             return float(s)
         except:
             raise ValueError("Не число")
-
-    def add(self):
-        if self.bivar:
-            tk.messagebox.showinfo("Режим", "Сбросьте двумерный режим")
-            return
-        s = self.entry.get().strip()
-        if not s:
-            return
-        try:
-            val = self._float(s)
-            self.data.append(val)
-            self._save_hist()
-            if self.f_active:
-                self.unfilter()
-            self.entry.delete(0, tk.END)
-            self.show()
-            self.refresh_info()
-            self.msg_lbl.config(text="Добавлено", foreground="green")
-        except ValueError:
-            self.msg_lbl.config(text="Ошибка! Введите число", foreground="red")
 
     def show(self):
         arr = self.fdata if self.f_active else self.data
@@ -379,6 +444,7 @@ class NumTab:
                     else:
                         self.data[line] = (new_x, new_y)
                         self._save_hist()
+                    self._update_xy_from_data()
         else:
             old = arr[line]
             new = tk.simpledialog.askfloat("Изменить", f"Текущее {old}", initialvalue=old)
@@ -404,17 +470,18 @@ class NumTab:
         self.x = []
         self.y = []
         self.show()
-        self.stat_lbl.config(text="Нет данных")
+        self.update_stats()
         self.refresh_info()
 
-    def stats(self):
+    def update_stats(self):
         if self.bivar:
-            tk.messagebox.showinfo("Статистика", "Для двумерных данных используйте корреляцию/регрессию")
+            self.stat_lbl.config(text="Двумерные данные\nИспользуйте\nрегрессию/корреляцию")
             return
         arr = self.fdata if self.f_active else self.data
         if not arr:
+            self.stat_lbl.config(text="Нет данных")
             return
-        avg = sum(arr)/len(arr)
+        avg = sum(arr) / len(arr)
         med = statistics.median(arr)
         mn = min(arr)
         mx = max(arr)
@@ -423,6 +490,29 @@ class NumTab:
             text=f"Среднее: {avg:.3f}\nМедиана: {med:.3f}\nСт. откл.: {std:.3f}\nMin: {mn}\nMax: {mx}"
         )
 
+    def refresh_info(self):
+        arr = self.fdata if self.f_active else self.data
+        n = len(arr)
+        self.info_lbl.config(text=f"Элементов: {n}")
+        if n > 0:
+            rec = arr[-5:] if n >= 5 else arr
+            if self.bivar:
+                txt = ", ".join([f"({x:.2f}→{y:.2f})" for (x, y) in rec])
+            else:
+                txt = ", ".join(str(v) for v in rec)
+            self.recent_lbl.config(text=txt)
+        else:
+            self.recent_lbl.config(text="—")
+        self.update_stats()
+
+    def _math_menu(self):
+        try:
+            self.menu.post(self.btn_math.winfo_rootx(),
+                           self.btn_math.winfo_rooty() + self.btn_math.winfo_height())
+        except:
+            pass
+
+    # ---------- математические методы (без изменений) ----------
     def correl(self):
         if not self.bivar:
             tk.messagebox.showinfo("Корреляция", "Сначала загрузите X,Y")
@@ -789,22 +879,6 @@ class NumTab:
         else:
             tk.messagebox.showwarning("Нет данных", "Не удалось извлечь числа")
 
-    def gen_rand(self):
-        if self.bivar:
-            tk.messagebox.showinfo("Генерация", "Сначала очистите данные")
-            return
-        n = tk.simpledialog.askinteger("Генерация", "Количество чисел", minvalue=1)
-        if not n: return
-        dist = tk.simpledialog.askstring("Распределение", "normal / uniform", initialvalue="uniform")
-        if dist == 'normal':
-            vals = np.random.normal(50, 15, n).tolist()
-        else:
-            vals = [random.uniform(0, 100) for _ in range(n)]
-        self.data += vals
-        self._save_hist()
-        self.show()
-        self.refresh_info()
-
     def hist_plot(self):
         if self.bivar:
             tk.messagebox.showinfo("Гистограмма", "Только одномерные данные")
@@ -845,8 +919,9 @@ class NumTab:
         if self.bivar:
             tk.messagebox.showinfo("Поиск", "Только одномерные данные")
             return
-        s = self.entry.get()
-        if not s: return
+        s = self.entry_single.get().strip() if not self.two_column_mode else ""
+        if not s:
+            return
         try:
             num = self._float(s)
             arr = self.fdata if self.f_active else self.data
@@ -867,7 +942,7 @@ class NumTab:
         dlg.geometry("300x250")
         ttk.Label(dlg, text="Условие:").pack(pady=5)
         cond_var = tk.StringVar(value=">")
-        for c, d in (">",">"), ("<","<"), (">=",">="), ("<=","<="):
+        for c, d in ((">",">"), ("<","<"), (">=",">="), ("<=","<=")):
             ttk.Radiobutton(dlg, text=d, variable=cond_var, value=c).pack(anchor='w')
         ttk.Label(dlg, text="Значение:").pack()
         val_ent = ttk.Entry(dlg)
@@ -895,32 +970,229 @@ class NumTab:
         self.unfilter()
 
 
+# -------------------------------------------------------------
+# ВКЛАДКА ТЕКСТОВЫХ ДАННЫХ (с полными словарями)
+# -------------------------------------------------------------
 class TxtTab:
     def __init__(self, parent, app):
         self.parent = parent
         self.app = app
         self.lang = 'russian'
-        self.langs = {
-            'russian': 'Русский', 'english': 'English', 'german': 'Deutsch',
-            'french': 'Français', 'spanish': 'Español'
-        }
+        self.langs = {'russian': 'Русский', 'english': 'English'}
         self.stops = set()
-        self.stem = None
+        self.stemmer = None
 
-        self.analyzers = {}
-        if VADER_OK:
-            try:
-                self.analyzers['english'] = SentimentIntensityAnalyzer()
-            except: pass
-        if DOST_OK:
-            try:
-                tokenizer = RegexTokenizer()
-                model = FastTextSocialNetworkModel(tokenizer=tokenizer)
-                self.analyzers['russian'] = model
-            except: pass
+        # ------------------ ПОЛНЫЕ РАСШИРЕННЫЕ СЛОВАРИ (без сокращений) ------------------
+        self.raw_pos = {
+            'russian': [
+                'хороший', 'хорошая', 'хорошее', 'хорошие', 'хорош', 'хороша', 'хорошо',
+                'отличный', 'отличная', 'отличное', 'отличные', 'отличен', 'отлична', 'отлично',
+                'прекрасный', 'прекрасная', 'прекрасное', 'прекрасные', 'прекрасен', 'прекрасна', 'прекрасно',
+                'замечательный', 'замечательная', 'замечательное', 'замечательные', 'замечателен', 'замечательна', 'замечательно',
+                'великий', 'великая', 'великое', 'великие', 'велик', 'велика', 'велико',
+                'великолепный', 'великолепная', 'великолепное', 'великолепные', 'великолепен', 'великолепна', 'великолепно',
+                'чудесный', 'чудесная', 'чудесное', 'чудесные', 'чудесен', 'чудесна', 'чудесно',
+                'восхитительный', 'восхитительная', 'восхитительное', 'восхитительные', 'восхитителен', 'восхитительна', 'восхитительно',
+                'солнечный', 'солнечная', 'солнечное', 'солнечные', 'солнечен', 'солнечна', 'солнечно',
+                'успешный', 'успешная', 'успешное', 'успешные', 'успешен', 'успешна', 'успешно',
+                'позитивный', 'позитивная', 'позитивное', 'позитивные', 'позитивен', 'позитивна', 'позитивно',
+                'классный', 'классная', 'классное', 'классные', 'классен', 'классна', 'классно',
+                'крутой', 'крутая', 'крутое', 'крутые', 'крут', 'крута', 'круто',
+                'супер', 'потрясающий', 'потрясающая', 'потрясающее', 'потрясающие', 'потрясающ',
+                'зашибенный', 'зашибенная', 'зашибенное', 'зашибенные', 'зашибен', 'зашибена',
+                'милый', 'милая', 'милое', 'милые', 'мил', 'мила', 'мило',
+                'приятный', 'приятная', 'приятное', 'приятные', 'приятен', 'приятна', 'приятно',
+                'славный', 'славная', 'славное', 'славные', 'славен', 'славна', 'славно',
+                'благородный', 'благородная', 'благородное', 'благородные', 'благороден', 'благородна', 'благородно',
+                'лучший', 'лучшая', 'лучшее', 'лучшие', 'лучше',
+                'любовь', 'любви', 'любовью', 'любовь', 'любови', 'любовей', 'любовный',
+                'счастье', 'счастья', 'счастью', 'счастьем', 'счастлив', 'счастлива', 'счастливо', 'счастливый',
+                'радость', 'радости', 'радостью', 'радостей', 'радостям', 'радостный',
+                'добро', 'добра', 'добру', 'добром', 'добрый', 'добрая', 'доброе', 'добрые',
+                'великолепие', 'великолепия', 'великолепию', 'великолепием',
+                'восторг', 'восторга', 'восторгу', 'восторгом', 'восторженный',
+                'улыбка', 'улыбки', 'улыбкой', 'улыбку', 'улыбаться', 'улыбнуться',
+                'смех', 'смеха', 'смеху', 'смехом', 'смешной', 'смеяться',
+                'праздник', 'праздника', 'празднику', 'праздником', 'праздничный',
+                'победа', 'победы', 'победе', 'победой', 'победный',
+                'удача', 'удачи', 'удаче', 'удачу', 'удачей', 'удачный',
+                'здоровье', 'здоровья', 'здоровью', 'здоровьем', 'здоровый',
+                'красота', 'красоты', 'красоте', 'красотой', 'красивый',
+                'гармония', 'гармонии', 'гармонию', 'гармонией', 'гармоничный',
+                'вдохновение', 'вдохновения', 'вдохновению', 'вдохновением', 'вдохновляющий',
+                'успех', 'успеха', 'успеху', 'успехом', 'успехи', 'успешный',
+                'любить', 'люблю', 'любишь', 'любит', 'любим', 'любите', 'любят', 'любил', 'любила', 'любили',
+                'радоваться', 'радуюсь', 'радуешься', 'радуется', 'радовался', 'радовалась', 'радовались', 'радуйся',
+                'восхищать', 'восхищаю', 'восхищаешь', 'восхищает', 'восхищал', 'восхищала', 'восхищаться', 'восхититься',
+                'улыбаться', 'улыбаюсь', 'улыбается', 'улыбался', 'улыбалась', 'улыбнуться',
+                'смеяться', 'смеюсь', 'смеется', 'смеялся', 'смеялась',
+                'побеждать', 'побеждаю', 'побеждает', 'побеждал', 'победить',
+                'радовать', 'радую', 'радует', 'радовал', 'радовало',
+                'хорошо', 'отлично', 'прекрасно', 'замечательно', 'великолепно', 'чудесно', 'классно', 'круто',
+                'позитивно', 'радостно', 'счастливо', 'доброжелательно', 'успешно', 'благополучно', 'превосходно',
+                'великодушно', 'гармонично', 'вдохновенно', 'победно', 'удачно', 'красиво', 'мило', 'приятно'
+            ],
+            'english': [
+                'good', 'better', 'best', 'well', 'goodly', 'goodness',
+                'great', 'greater', 'greatest', 'greatly',
+                'excellent', 'excellently', 'excellence',
+                'wonderful', 'wonderfully', 'wonderfulness',
+                'fantastic', 'fantastically',
+                'amazing', 'amazingly', 'amazed', 'amazingness',
+                'beautiful', 'beautifully', 'beauty',
+                'nice', 'nicer', 'nicest', 'nicely', 'niceness',
+                'pleased', 'pleasing', 'pleasantly', 'pleasure',
+                'glorious', 'gloriously', 'glory',
+                'superb', 'superbly', 'super',
+                'brilliant', 'brilliantly', 'brilliance',
+                'awesome', 'awesomely', 'awesomeness',
+                'perfect', 'perfectly', 'perfection',
+                'lovely', 'lovelier', 'loveliest', 'loveliness',
+                'delightful', 'delightfully', 'delight',
+                'splendid', 'splendidly', 'splendor',
+                'positive', 'positively', 'positivity',
+                'favorable', 'favorably', 'favor',
+                'enjoyable', 'enjoyably', 'enjoyment',
+                'cheerful', 'cheerfully', 'cheer', 'cheerfulness',
+                'ecstatic', 'ecstatically', 'ecstasy',
+                'happy', 'happier', 'happiest', 'happily', 'happiness',
+                'joy', 'joyful', 'joyfully', 'joyous', 'joyousness',
+                'love', 'loves', 'loving', 'loved', 'lovely', 'lover',
+                'victory', 'victories', 'victorious', 'victoriously',
+                'smile', 'smiles', 'smiling', 'smiled',
+                'laughter', 'laugh', 'laughs', 'laughing', 'laughed', 'laughable',
+                'celebration', 'celebrate', 'celebrating', 'celebrated', 'celebratory',
+                'success', 'successes', 'successful', 'successfully',
+                'luck', 'lucky', 'luckier', 'luckiest', 'luckily', 'good luck',
+                'health', 'healthy', 'healthier', 'healthiest', 'healthily',
+                'harmony', 'harmonious', 'harmoniously',
+                'inspiration', 'inspirational', 'inspiring', 'inspired',
+                'enjoy', 'enjoys', 'enjoyed', 'enjoying',
+                'celebrate', 'celebrates', 'celebrated', 'celebrating',
+                'succeed', 'succeeds', 'succeeded', 'succeeding'
+            ]
+        }
+
+        self.raw_neg = {
+            'russian': [
+                'плохой', 'плохая', 'плохое', 'плохие', 'плох', 'плоха', 'плохо',
+                'ужасный', 'ужасная', 'ужасное', 'ужасные', 'ужасен', 'ужасна', 'ужасно',
+                'отвратительный', 'отвратительная', 'отвратительное', 'отвратительные', 'отвратителен', 'отвратительна', 'отвратительно',
+                'грустный', 'грустная', 'грустное', 'грустные', 'грустен', 'грустна', 'грустно',
+                'мерзкий', 'мерзкая', 'мерзкое', 'мерзкие', 'мерзок', 'мерзка', 'мерзко',
+                'скверный', 'скверная', 'скверное', 'скверные', 'скверен', 'скверна', 'скверно',
+                'негативный', 'негативная', 'негативное', 'негативные', 'негативен', 'негативна', 'негативно',
+                'дурной', 'дурная', 'дурное', 'дурные', 'дурен', 'дурна', 'дурно',
+                'кошмарный', 'кошмарная', 'кошмарное', 'кошмарные', 'кошмарен', 'кошмарна', 'кошмарно',
+                'гадкий', 'гадкая', 'гадкое', 'гадкие', 'гадок', 'гадка', 'гадко',
+                'злой', 'злая', 'злое', 'злые', 'зол', 'зла', 'зло',
+                'жестокий', 'жестокая', 'жестокое', 'жестокие', 'жесток', 'жестока', 'жестоко',
+                'противный', 'противная', 'противное', 'противные', 'противен', 'противна', 'противно',
+                'безнадежный', 'безнадежная', 'безнадежное', 'безнадежные', 'безнадежен', 'безнадежна', 'безнадежно',
+                'ненависть', 'ненависти', 'ненавистью', 'ненавистный',
+                'зло', 'зла', 'злу', 'злом', 'злые',
+                'печаль', 'печали', 'печалью', 'печальный', 'печально',
+                'беда', 'беды', 'беде', 'беду', 'бедой', 'бедный',
+                'проблема', 'проблемы', 'проблеме', 'проблему', 'проблемой', 'проблемный',
+                'боль', 'боли', 'болью', 'болевой', 'больно',
+                'страх', 'страха', 'страху', 'страхом', 'страхи', 'страшный', 'страшно',
+                'жестокость', 'жестокости', 'жестокостью',
+                'мерзость', 'мерзости', 'мерзостью',
+                'гадость', 'гадости', 'гадостью',
+                'слеза', 'слезы', 'слезу', 'слезой', 'слёзный',
+                'плач', 'плача', 'плачу', 'плачем', 'плакать',
+                'потеря', 'потери', 'потерю', 'потерей', 'потерянный',
+                'болезнь', 'болезни', 'болезнью', 'больной',
+                'несчастье', 'несчастья', 'несчастью', 'несчастьем', 'несчастный',
+                'разочарование', 'разочарования', 'разочарованию', 'разочарованием', 'разочарованный',
+                'агрессия', 'агрессии', 'агрессию', 'агрессией', 'агрессивный',
+                'конфликт', 'конфликта', 'конфликту', 'конфликтом', 'конфликтный',
+                'тоска', 'тоски', 'тоске', 'тоской', 'тоскливый', 'тоскливо',
+                'уныние', 'уныния', 'унынию', 'унынием', 'унылый',
+                'ненавидеть', 'ненавижу', 'ненавидишь', 'ненавидит', 'ненавидел', 'ненавидела',
+                'злиться', 'злюсь', 'злишься', 'злится', 'злился', 'злилась',
+                'плакать', 'плачу', 'плачешь', 'плачет', 'плакал', 'плакала', 'плачь',
+                'болеть', 'болею', 'болеешь', 'болеет', 'болел', 'болела',
+                'страдать', 'страдаю', 'страдаешь', 'страдает', 'страдал', 'страдала', 'страдающий',
+                'унывать', 'унываю', 'унывает', 'унывал', 'унывала',
+                'разочаровывать', 'разочаровываю', 'разочаровывает', 'разочаровывал',
+                'конфликтовать', 'конфликтую', 'конфликтует', 'конфликтовал',
+                'плохо', 'ужасно', 'отвратительно', 'грустно', 'скверно', 'негативно', 'дурно', 'кошмарно',
+                'больно', 'страшно', 'жестоко', 'гадко', 'мерзко', 'тоскливо', 'безнадежно', 'уныло', 'печально'
+            ],
+            'english': [
+                'bad', 'worse', 'worst', 'badly', 'badness',
+                'terrible', 'terribly', 'terribleness',
+                'awful', 'awfully', 'awfulness',
+                'horrible', 'horribly', 'horrid',
+                'sad', 'sadder', 'saddest', 'sadly', 'sadness',
+                'nasty', 'nastier', 'nastiest', 'nastily', 'nastiness',
+                'negative', 'negatively', 'negativity',
+                'poor', 'poorer', 'poorest', 'poorly', 'poverty',
+                'disgusting', 'disgustingly', 'disgust',
+                'miserable', 'miserably', 'misery',
+                'unpleasant', 'unpleasantly', 'unpleasantness',
+                'evil', 'evilly', 'evilness',
+                'dreadful', 'dreadfully',
+                'lousy', 'lousily',
+                'rotten', 'rottenly',
+                'unhappy', 'unhappier', 'unhappiest', 'unhappily', 'unhappiness',
+                'gloomy', 'gloomily', 'gloom',
+                'hopeless', 'hopelessly', 'hopelessness',
+                'painful', 'painfully',
+                'fearful', 'fearfully',
+                'violent', 'violently',
+                'aggressive', 'aggressively',
+                'hate', 'hatred', 'hateful', 'hater',
+                'anger', 'angry', 'angrier', 'angriest', 'angrily',
+                'pain', 'pains', 'painful', 'painfully',
+                'sorrow', 'sorrows', 'sorrowful', 'sorrowfully',
+                'grief', 'griefs', 'grievous', 'grieve',
+                'fear', 'fears', 'fearful', 'fearfully',
+                'trouble', 'troubles', 'troublesome',
+                'disaster', 'disasters', 'disastrous', 'disastrously',
+                'failure', 'failures', 'failing',
+                'loss', 'losses', 'lost',
+                'illness', 'illnesses', 'ill', 'sickness',
+                'suffering', 'sufferings', 'suffer',
+                'disappointment', 'disappointments', 'disappointed',
+                'frustration', 'frustrations', 'frustrated',
+                'violence', 'violent', 'violently',
+                'cry', 'cries', 'crying', 'cried',
+                'suffer', 'suffers', 'suffered', 'suffering',
+                'hurt', 'hurts', 'hurting', 'hurted',
+                'harm', 'harms', 'harmed', 'harming',
+                'kill', 'kills', 'killed', 'killing',
+                'disappoint', 'disappoints', 'disappointed', 'disappointing',
+                'frustrate', 'frustrates', 'frustrated', 'frustrating'
+            ]
+        }
 
         self._build()
         self._set_lang()
+
+    def _set_lang(self):
+        try:
+            self.stops = set(nltk.corpus.stopwords.words(self.lang))
+        except:
+            self.stops = set()
+        try:
+            self.stemmer = nltk.stem.SnowballStemmer(self.lang)
+        except:
+            self.stemmer = None
+        self.pos_stems = set()
+        self.neg_stems = set()
+        if self.stemmer:
+            for w in self.raw_pos.get(self.lang, []):
+                self.pos_stems.add(self.stemmer.stem(w))
+            for w in self.raw_neg.get(self.lang, []):
+                self.neg_stems.add(self.stemmer.stem(w))
+        self.refresh_stats()
+
+    def _chg_lang(self, event=None):
+        self.lang = self.lang_var.get()
+        self._set_lang()
+        self.sentiment()
 
     def _build(self):
         btn_frame = ttk.Frame(self.parent)
@@ -935,23 +1207,19 @@ class TxtTab:
             ("📂 Загрузить", self.load),
             ("💾 Сохранить", self.save),
             ("🗑️ Очистить", self.clear),
-            ("📋 Статистика", self.show_stats),
             ("🔍 Поиск", self.search),
             ("☁️ Облако слов", self.cloud),
-            ("😊 Тональность", self.sentiment),
             ("🚫 Удалить стоп-слова", self.del_stops),
             ("🌱 Стемминг", self.stem_words),
         ]:
             btn(text, cmd)
-
-        btn("↶", self.undo)
-        btn("↷", self.redo)
 
         main = ttk.Frame(self.parent)
         main.pack(fill='both', expand=True, padx=10, pady=10)
 
         left = ttk.Frame(main)
         left.pack(side=tk.LEFT, fill='both', expand=True)
+
         right = ttk.Frame(main, width=350)
         right.pack(side=tk.RIGHT, fill='y', padx=(10,0))
         right.pack_propagate(False)
@@ -960,8 +1228,7 @@ class TxtTab:
                                 undo=True, autoseparators=True, maxundo=100)
         self.text_box.pack(fill='both', expand=True)
         self.text_box.bind("<KeyRelease>", lambda e: self.refresh_stats())
-        self.text_box.bind("<Control-z>", lambda e: self.undo())
-        self.text_box.bind("<Control-y>", lambda e: self.redo())
+        self.text_box.edit_reset()
 
         self.stat_box = ttk.LabelFrame(right, text="Статистика")
         self.stat_box.pack(fill='x', pady=5)
@@ -985,29 +1252,15 @@ class TxtTab:
         try:
             self.text_box.edit_undo()
             self.refresh_stats()
-        except: pass
+        except:
+            pass
 
     def redo(self, event=None):
         try:
             self.text_box.edit_redo()
             self.refresh_stats()
-        except: pass
-
-    def _set_lang(self):
-        try:
-            self.stops = set(nltk.corpus.stopwords.words(self.lang))
         except:
-            self.stops = set()
-        try:
-            self.stem = nltk.stem.SnowballStemmer(self.lang)
-        except:
-            self.stem = None
-        self.refresh_stats()
-
-    def _chg_lang(self, event=None):
-        self.lang = self.lang_var.get()
-        self._set_lang()
-        self.sentiment()
+            pass
 
     def get_txt(self):
         return self.text_box.get("1.0", tk.END).strip()
@@ -1019,6 +1272,7 @@ class TxtTab:
         text = self.get_txt()
         if not text:
             self.stat_lbl.config(text="Нет текста")
+            self.sent_lbl.config(text="—")
             return
         chars = len(text)
         words = self.words_from(text)
@@ -1056,6 +1310,7 @@ class TxtTab:
         if content:
             self.text_box.delete("1.0", tk.END)
             self.text_box.insert("1.0", content)
+            self.text_box.edit_reset()
             self.refresh_stats()
         else:
             tk.messagebox.showwarning("Пустой файл", "Не удалось извлечь текст")
@@ -1097,11 +1352,8 @@ class TxtTab:
 
     def clear(self):
         self.text_box.delete("1.0", tk.END)
+        self.text_box.edit_reset()
         self.refresh_stats()
-
-    def show_stats(self):
-        self.refresh_stats()
-        tk.messagebox.showinfo("Статистика", self.stat_lbl.cget("text"))
 
     def search(self):
         word = tk.simpledialog.askstring("Поиск", "Слово/фрагмент:")
@@ -1121,113 +1373,65 @@ class TxtTab:
         plt.show(block=False)
 
     def sentiment(self):
-        lang = self.lang
         text = self.get_txt()
         if not text:
             self.sent_lbl.config(text="Нет текста")
             return
-
-        if lang in self.analyzers:
-            try:
-                if lang == 'english' and VADER_OK:
-                    scores = self.analyzers['english'].polarity_scores(text)
-                    comp = scores['compound']
-                    if comp >= 0.05:
-                        sent = f"Позитивное ({comp:.2f})"
-                    elif comp <= -0.05:
-                        sent = f"Негативное ({comp:.2f})"
-                    else:
-                        sent = "Нейтральное"
-                    det = f"pos={scores['pos']:.2f} neg={scores['neg']:.2f} neu={scores['neu']:.2f}"
-                    self.sent_lbl.config(text=f"{sent}\n{det}")
-                    return
-                if lang == 'russian' and DOST_OK:
-                    model = self.analyzers['russian']
-                    res = model.predict([text])
-                    if res and len(res[0]) > 0:
-                        em = res[0][0]
-                        probs = {k: v for k, v in em.items() if k in ('positive','negative','neutral')}
-                        if probs:
-                            dom = max(probs, key=probs.get)
-                            sent = f"{dom.capitalize()} ({probs[dom]:.2f})"
-                            det = f"pos={probs['positive']:.2f} neg={probs['negative']:.2f} neu={probs['neutral']:.2f}"
-                            self.sent_lbl.config(text=f"{sent}\n{det}")
-                            return
-            except:
-                pass
-
-        words = self.words_from(text)
-        pos_dict = {
-            'russian': {'хороший','отличный','прекрасный','замечательный','великий','любовь','счастье','радость',
-                        'добрый','великолепный','чудесный','восхитительный','солнечный','успешный','позитивный'},
-            'english': {'good','great','excellent','wonderful','fantastic','love','happy','joy',
-                        'amazing','beautiful','nice','pleased','glorious','superb','brilliant'},
-            'german': {'gut','großartig','ausgezeichnet','wunderbar','fantastisch','liebe','glücklich','freude',
-                       'hervorragend','prima','positiv','schön','erfolgreich','angenehm'},
-            'french': {'bon','excellent','merveilleux','fantastique','amour','bonheur','joie',
-                       'magnifique','superbe','positif','agréable','charmant','heureux'},
-            'spanish': {'bueno','excelente','maravilloso','fantástico','amor','felicidad','alegría',
-                        'genial','positivo','bonito','espléndido','encantador','agradable'}
-        }
-        neg_dict = {
-            'russian': {'плохой','ужасный','отвратительный','грустный','ненависть','зло','печаль',
-                        'мерзкий','скверный','негативный','паршивый','унылый','тоскливый'},
-            'english': {'bad','terrible','awful','horrible','sad','hate','angry','pain',
-                        'nasty','negative','poor','disgusting','miserable','unpleasant'},
-            'german': {'schlecht','schrecklich','furchtbar','traurig','hass','wut','schmerz',
-                       'übel','negativ','elend','miserabel','unangenehm'},
-            'french': {'mauvais','terrible','horrible','triste','haine','colère','douleur',
-                       'méchant','négatif','pénible','désagréable','misérable'},
-            'spanish': {'malo','terrible','horrible','triste','odio','enfado','dolor',
-                        'negativo','desagradable','pésimo','lamentable','penoso'}
-        }
-        pos_set = pos_dict.get(lang, set())
-        neg_set = neg_dict.get(lang, set())
-        if not pos_set or not neg_set:
-            self.sent_lbl.config(text="Тональность не реализована")
+        if not self.stemmer:
+            self.sent_lbl.config(text="Стеммер недоступен")
             return
-        pos = sum(1 for w in words if w in pos_set)
-        neg = sum(1 for w in words if w in neg_set)
-        if pos + neg == 0:
-            sent = "Нейтрально"
+        words = self.words_from(text)
+        if not words:
+            self.sent_lbl.config(text="Нет слов")
+            return
+        stems = [self.stemmer.stem(w) for w in words]
+        pos_count = sum(1 for s in stems if s in self.pos_stems)
+        neg_count = sum(1 for s in stems if s in self.neg_stems)
+        total = pos_count + neg_count
+        if total == 0:
+            sentiment_text = "Нейтрально"
+            detail = "Позитивных/негативных слов не найдено"
         else:
-            ratio = pos / (pos+neg)
-            if ratio > 0.6:
-                sent = f"Позитивное {ratio*100:.1f}%"
-            elif ratio < 0.4:
-                sent = f"Негативное {(1-ratio)*100:.1f}%"
+            pos_ratio = pos_count / total
+            if pos_ratio > 0.6:
+                sentiment_text = f"Позитивное ({pos_ratio*100:.0f}%)"
+            elif pos_ratio < 0.4:
+                sentiment_text = f"Негативное ({(1-pos_ratio)*100:.0f}%)"
             else:
-                sent = "Нейтрально"
-        self.sent_lbl.config(text=f"Позитив: {pos}, Негатив: {neg}\n{sent}")
+                sentiment_text = "Нейтрально"
+            detail = f"Позитив: {pos_count}, Негатив: {neg_count}"
+        self.sent_lbl.config(text=f"{sentiment_text}\n{detail}")
 
     def del_stops(self):
         text = self.get_txt()
         words = self.words_from(text)
-        filt = [w for w in words if w not in self.stops]
+        filtered = [w for w in words if w not in self.stops]
         self.text_box.delete("1.0", tk.END)
-        self.text_box.insert("1.0", ' '.join(filt))
+        self.text_box.insert("1.0", ' '.join(filtered))
+        self.text_box.edit_reset()
+        self.refresh_stats()
 
     def stem_words(self):
-        if not self.stem:
+        if not self.stemmer:
             tk.messagebox.showwarning("Стемминг", "Для выбранного языка стемминг недоступен")
             return
         text = self.get_txt()
         words = self.words_from(text)
-        stemmed = [self.stem.stem(w) for w in words]
+        stemmed = [self.stemmer.stem(w) for w in words]
         self.text_box.delete("1.0", tk.END)
         self.text_box.insert("1.0", ' '.join(stemmed))
+        self.text_box.edit_reset()
+        self.refresh_stats()
 
 
 if __name__ == "__main__":
     root = tk.Tk()
     style = ttk.Style()
     style.theme_use('clam')
-
-    default_font = ('Segoe UI Emoji', 10)  
+    default_font = ('Segoe UI Emoji', 10)
     style.configure('TButton', font=default_font, padding=6)
     style.configure('TLabel', font=default_font)
     style.configure('TLabelframe.Label', font=default_font)
     style.configure('TEntry', font=default_font)
-
     app = App(root)
     root.mainloop()
